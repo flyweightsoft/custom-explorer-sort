@@ -2,7 +2,7 @@
   "name": "custom-explorer-sort",
   "displayName": "Custom Explorer Sort",
   "description": "Re-order files and folder as you wish in VSCode",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "license": "MIT",
   "engines": {
     "vscode": "^1.96.0"
@@ -50,7 +50,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/FlyweightSoft/WorkspaceWeaver"
+    "url": "https://github.com/flyweightsoft/custom-explorer-sort"
   },
   "dependencies": {
     "minimatch": "^10.0.1"
