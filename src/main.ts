@@ -3,10 +3,10 @@ import { utimesSync } from 'fs';
 import * as path from 'path';
 import { minimatch } from 'minimatch';
 
-import { withWorkspaceRoot } from './core/pathing';
-import { loadIgnoreGlobs, walkWorkspace } from './core/fsTraversal';
+import { getWorkspaceRootPath, withWorkspaceRootPath } from './core/pathing';
+import { loadIgnoreGlobsForFolder, walkWorkspace } from './core/fsTraversal';
 import { outputChannel } from './ui/output';
-import { extractRegexEntries, readOrderFile, REGEX_PREFIX } from './core/settings';
+import { extractRegexEntries, readOrderFileForFolder, REGEX_PREFIX } from './core/settings';
 import { byLocaleCompare } from './core/sorters';
 
 function touchInOrder(fileList: string[]) {
@@ -42,53 +42,64 @@ function moveRegexMatchesToTail(fileOrder: string[], regexLines: string[]): stri
     return [...filesNotMatching, ...filesMatching];
 }
 
-async function sortedNonOrderedEntries(): Promise<string[]> {
-    const order = readOrderFile();
-    const workspaceUri = vscode.workspace.workspaceFolders?.map(folder => folder.uri).at(0);
-    if (!workspaceUri) { throw new URIError('No workspace detected'); }
+async function sortedNonOrderedEntriesForFolder(folder: vscode.WorkspaceFolder): Promise<string[]> {
+    const order = readOrderFileForFolder(folder);
+    const rootPath = getWorkspaceRootPath(folder);
     const entries = new Set<string>();
-    const ignorePattern = loadIgnoreGlobs();
-    await walkWorkspace(workspaceUri, entries, ignorePattern);
+    const ignorePattern = loadIgnoreGlobsForFolder(folder);
+    await walkWorkspace(folder.uri, entries, ignorePattern);
 
-    const absoluteOrder = withWorkspaceRoot(order.filter(l => !l.startsWith(REGEX_PREFIX)));
+    const absoluteOrder = withWorkspaceRootPath(order.filter(l => !l.startsWith(REGEX_PREFIX)), rootPath);
     const nonOrdered = Array.from(entries).filter(p => !absoluteOrder.includes(p));
     const alphabetic = byLocaleCompare(nonOrdered);
     return moveRegexMatchesToTail(alphabetic, extractRegexEntries(order));
+}
+
+async function applyOrderingForFolder(folder: vscode.WorkspaceFolder) {
+    const rootPath = getWorkspaceRootPath(folder);
+    outputChannel.appendLine(`--- Processing workspace folder: ${folder.name} (${rootPath}) ---`);
+
+    let order = readOrderFileForFolder(folder);
+    if (order.length === 0) {
+        outputChannel.appendLine(`No .order file found or file is empty in ${folder.name} - skipping`);
+        return;
+    }
+    outputChannel.appendLine(`Config loaded with ${order.length} entries: ${JSON.stringify(order)}`);
+
+    order = order.filter(line => !line.startsWith(REGEX_PREFIX));
+    outputChannel.appendLine(`After filtering regex: ${JSON.stringify(order)}`);
+
+    const prefixed = withWorkspaceRootPath(order, rootPath);
+    outputChannel.appendLine(`Prefixed file order: ${JSON.stringify(prefixed)}`);
+
+    const others = await sortedNonOrderedEntriesForFolder(folder);
+    outputChannel.appendLine(`Non-config files count: ${others.length}`);
+
+    const reversed = [...prefixed].reverse();
+    const combined = [...others, ...reversed];
+
+    outputChannel.appendLine(`Processing ${combined.length} files for timestamp modification`);
+    touchInOrder(combined);
+    outputChannel.appendLine(`Sorting completed for ${folder.name}`);
 }
 
 async function applyOrdering() {
     try {
         outputChannel.appendLine('Starting applyOrdering');
 
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (!workspaceFolder) {
-            outputChannel.appendLine('No workspace folder detected - cannot sort files');
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders || workspaceFolders.length === 0) {
+            outputChannel.appendLine('No workspace folders detected - cannot sort files');
             return;
         }
-        outputChannel.appendLine(`Working in workspace: ${workspaceFolder.uri.fsPath}`);
 
-        let order = readOrderFile();
-        if (order.length === 0) {
-            outputChannel.appendLine('No config found or config is empty - exiting');
-            return;
+        outputChannel.appendLine(`Processing ${workspaceFolders.length} workspace folder(s)`);
+        
+        for (const folder of workspaceFolders) {
+            await applyOrderingForFolder(folder);
         }
-        outputChannel.appendLine(`Config loaded with ${order.length} entries: ${JSON.stringify(order)}`);
-
-        order = order.filter(line => !line.startsWith(REGEX_PREFIX));
-        outputChannel.appendLine(`After filtering regex: ${JSON.stringify(order)}`);
-
-        const prefixed = withWorkspaceRoot(order);
-        outputChannel.appendLine(`Prefixed file order: ${JSON.stringify(prefixed)}`);
-
-        const others = await sortedNonOrderedEntries();
-        outputChannel.appendLine(`Non-config files count: ${others.length}`);
-
-        const reversed = [...prefixed].reverse();
-        const combined = [...others, ...reversed];
-
-        outputChannel.appendLine(`Processing ${combined.length} files for timestamp modification`);
-        touchInOrder(combined);
-        outputChannel.appendLine('Sorting completed successfully');
+        
+        outputChannel.appendLine('=== All workspace folders processed ===');
     } catch (error) {
         outputChannel.appendLine(`Error in applyOrdering: ${error instanceof Error ? error.message : 'Unknown error'}`);
         outputChannel.appendLine(`Error stack: ${error instanceof Error ? error.stack : 'No stack trace'}`);
